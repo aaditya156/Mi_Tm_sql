@@ -1,0 +1,96 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  # ==========================================
+  # 1. CI: Automated Testing, Linting & Build
+  # ==========================================
+  test-and-build:
+    name: Run Tests & Build Checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      # --- Backend Validation ---
+      - name: Install Backend Dependencies
+        run: npm ci --prefix backend
+
+      - name: Run Backend Unit Tests (Jest)
+        run: npm test --prefix backend
+
+      # --- Frontend Validation ---
+      - name: Install Frontend Dependencies
+        run: npm ci --prefix frontend
+
+      - name: Run Frontend Linting
+        run: npm run lint --prefix frontend
+
+      - name: Verify Frontend Production Build
+        run: npm run build --prefix frontend
+
+      # --- Dockerfile Build Check ---
+      - name: Verify Backend Docker Build
+        run: docker build -t mi-time-backend:test ./backend
+
+  # ==========================================
+  # 2. CD: Deploy Backend to Google Cloud Run
+  # ==========================================
+  deploy-backend:
+    name: Deploy Backend to Cloud Run
+    needs: test-and-build
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Google Cloud Authentication (Keyless via Workload Identity)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: 'projects/129254485889/locations/global/workloadIdentityPools/github-pool/providers/github-provider'
+          service_account: 'github-actions-deployer@project-40dd357d-acda-45a7-a15.iam.gserviceaccount.com'
+
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Google Artifact Registry
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+      - name: Build and Push Backend Docker Image
+        run: |
+          IMAGE_NAME="us-central1-docker.pkg.dev/project-40dd357d-acda-45a7-a15/cloud-run-source-deploy/talent-iq-backend"
+          docker build -t ${IMAGE_NAME}:${{ github.sha }} -t ${IMAGE_NAME}:latest ./backend
+          docker push ${IMAGE_NAME}:${{ github.sha }}
+          docker push ${IMAGE_NAME}:latest
+
+      - name: Deploy to Cloud Run
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: talent-iq-backend
+          image: us-central1-docker.pkg.dev/project-40dd357d-acda-45a7-a15/cloud-run-source-deploy/talent-iq-backend:${{ github.sha }}
+          region: us-central1

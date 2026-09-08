@@ -1,0 +1,43 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String    @id @default(uuid())
+  name         String
+  email        String    @unique
+  profileImage String    @default("")
+  clerkId      String    @unique
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  hostedSessions       Session[] @relation("HostSessions")
+  participatedSessions Session[] @relation("ParticipantSessions")
+
+  @@map("users")
+}
+
+model Session {
+  id            String   @id @default(uuid())
+  problem       String
+  difficulty    String
+  status        String   @default("active")
+  callId        String   @default("")
+  hostId        String
+  participantId String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  host        User  @relation("HostSessions", fields: [hostId], references: [id], onDelete: Cascade)
+  participant User? @relation("ParticipantSessions", fields: [participantId], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt])
+  @@index([hostId])
+  @@index([participantId])
+  @@map("sessions")
+}
